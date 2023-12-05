@@ -1,0 +1,214 @@
+options:
+  docker: true
+  size: 2x
+
+definitions:
+  services:
+    docker:
+      memory: 6144 
+  steps:
+    - step: &build-image
+        name: Build Docker image
+        image: node:alpine
+        script:
+          - docker build --build-arg AuthToken=$FONTAWESOME_AUTHTOKEN -t web-auth-service-production:${BITBUCKET_COMMIT} .
+          - docker save --output tmp-image.docker web-auth-service-production
+        artifacts:
+          - tmp-image.docker
+    - step: &deploy_production
+        name: Push to GCP registry
+        image: google/cloud-sdk:alpine
+        script:
+          - docker load --input ./tmp-image.docker
+          # Authenticating with the service account key file
+          - echo $GCLOUD_API_KEYFILE_PRODUCTION> /tmp/gcloud-api-key.json
+          - gcloud components install gke-gcloud-auth-plugin
+          - export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+          - gcloud auth activate-service-account --key-file /tmp/gcloud-api-key.json
+          - gcloud config set project $GCLOUD_PROJECT_ID_PRODUCTION
+          # Tag container & push
+          - export TAG=$(echo "$BITBUCKET_TAG" | sed -e "s/v//g")
+          - export SUFFIX=$([[ ! -z "$TAG" ]] && echo ":$TAG" || echo "")
+          - export IMAGE_NAME=gcr.io/heavenland-production/web-auth-service-production:${BITBUCKET_COMMIT}
+          - docker tag web-auth-service-production:${BITBUCKET_COMMIT} ${IMAGE_NAME}
+          # Login to google docker hub
+          - cat /tmp/gcloud-api-key.json | docker login -u _json_key --password-stdin https://gcr.io
+          - docker push ${IMAGE_NAME}
+          - gcloud container images list
+          - curl -o /tmp/google-cloud-sdk.tar.gz https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-388.0.0-linux-x86_64.tar.gz
+          - tar -xvf /tmp/google-cloud-sdk.tar.gz -C /tmp/
+          - /tmp/google-cloud-sdk/install.sh -q
+          - source /tmp/google-cloud-sdk/path.bash.inc
+          - apk add --no-cache openssh-client bash
+          # download helm
+          - export VERIFY_CHECKSUM=false
+          - curl -sSL https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 | bash
+          - helm version
+          # push gke and aplly helm
+          - gcloud container clusters get-credentials general-cluster --zone=europe-west1-b --project $GCLOUD_PROJECT_ID_PRODUCTION
+          - gcloud components install kubectl
+          # upgrade helm for production
+          - helm upgrade 
+            --install
+            --namespace="web-auth-service-production"
+            --set app.name="web-auth-service-production"
+            --set ingress.name="web-auth-service-production-ingress"
+            --set ingress.host="auth.heavenland.io"
+            --set app.replicaCount="2"
+            --set app.namespace="web-auth-service-production"
+            --set service.port="3000"
+            --set service.type="NodePort"
+            --set app.port="3000"
+            --set service.name="web-auth-service-production-cluster"
+            --set image.repo="heavenland-production"
+            --set image.name="web-auth-service-production"
+            --set image.tag="${BITBUCKET_COMMIT}"
+            --wait
+            --timeout 1000s
+            --debug
+            chartwasproduction
+            ./deployment/web-auth-service-production
+
+# staging step
+    - step: &build-image_staging
+        name: Build Docker image
+        image: node:alpine
+        script:
+          - docker build -f Dockerfile.staging --build-arg AuthToken=$FONTAWESOME_AUTHTOKEN -t web-auth-service-staging:${BITBUCKET_COMMIT} .
+          - docker save --output tmp-image.docker web-auth-service-staging
+        artifacts:
+          - tmp-image.docker
+    - step: &deploy_staging
+        name: Push to GCP registry
+        image: google/cloud-sdk:alpine
+        script:
+          - docker load --input ./tmp-image.docker
+          # Authenticating with the service account key file
+          - echo $GCLOUD_API_KEYFILE_STAGING> /tmp/gcloud-api-key.json
+          - gcloud components install gke-gcloud-auth-plugin
+          - export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+          - gcloud auth activate-service-account --key-file /tmp/gcloud-api-key.json
+          - gcloud config set project $GCLOUD_PROJECT_ID_STAGING
+          # Tag container & push
+          - export TAG=$(echo "$BITBUCKET_TAG" | sed -e "s/v//g")
+          - export SUFFIX=$([[ ! -z "$TAG" ]] && echo ":$TAG" || echo "")
+          - export IMAGE_NAME=gcr.io/heavenland-staging/web-auth-service-staging:${BITBUCKET_COMMIT}
+          - docker tag web-auth-service-staging:${BITBUCKET_COMMIT} ${IMAGE_NAME}
+          # Login to google docker hub
+          - cat /tmp/gcloud-api-key.json | docker login -u _json_key --password-stdin https://gcr.io
+          - docker push ${IMAGE_NAME}
+          - gcloud container images list
+          - curl -o /tmp/google-cloud-sdk.tar.gz https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-388.0.0-linux-x86_64.tar.gz
+          - tar -xvf /tmp/google-cloud-sdk.tar.gz -C /tmp/
+          - /tmp/google-cloud-sdk/install.sh -q
+          - source /tmp/google-cloud-sdk/path.bash.inc
+          - apk add --no-cache openssh-client bash
+          # download helm
+          - export VERIFY_CHECKSUM=false
+          - curl -sSL https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 | bash
+          - helm version
+          # push gke and aplly helm
+          - gcloud container clusters get-credentials general-cluster --zone=europe-west1-b --project $GCLOUD_PROJECT_ID_STAGING
+          - gcloud components install kubectl
+          # upgrade helm for staging
+          - helm upgrade 
+            --install
+            --namespace="web-auth-service-staging"
+            --set app.name="web-auth-service-staging"
+            --set ingress.name="web-auth-service-staging-ingress"
+            --set ingress.host="auth.staging.heavenland.io"
+            --set ingress.tunnel_name="gke-tunnel-origin.heavenland.io"
+            --set app.replicaCount="2"
+            --set app.namespace="web-auth-service-staging"
+            --set service.port="80"
+            --set app.port="3000"
+            --set service.name="web-auth-service-staging-cluster"
+            --set image.tag="${BITBUCKET_COMMIT}"
+            --set image.name="web-auth-service-staging"
+            --set image.repository="gcr.io"
+            --set image.repoproject="heavenland-staging"
+            --wait
+            --timeout 1000s
+            --debug
+            chartwasstaging
+            ./deployment/web-auth-service
+
+
+# develop step
+    - step: &build-image_develop
+        name: Build Docker image Develop
+        image: node:alpine
+        script:
+          - docker build -f Dockerfile.develop --build-arg AuthToken=$FONTAWESOME_AUTHTOKEN -t web-auth-service-develop:${BITBUCKET_COMMIT} .
+          - docker save --output tmp-image.docker web-auth-service-develop
+        artifacts:
+          - tmp-image.docker
+    - step: &deploy_develop
+        name: Push to GCP registry Develop
+        image: google/cloud-sdk:alpine
+        script:
+          - docker load --input ./tmp-image.docker
+          # Authenticating with the service account key file
+          - echo $GCLOUD_API_KEYFILE_DEVELOP> /tmp/gcloud-api-key.json
+          - gcloud components install gke-gcloud-auth-plugin
+          - export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+          - gcloud auth activate-service-account --key-file /tmp/gcloud-api-key.json
+          - gcloud config set project heavenland-development
+          # Tag container & push
+          - export TAG=$(echo "$BITBUCKET_TAG" | sed -e "s/v//g")
+          - export SUFFIX=$([[ ! -z "$TAG" ]] && echo ":$TAG" || echo "")
+          - export IMAGE_NAME=gcr.io/heavenland-development/web-auth-service-develop:${BITBUCKET_COMMIT}
+          - docker tag web-auth-service-develop:${BITBUCKET_COMMIT} ${IMAGE_NAME}
+          # Login to google docker hub
+          - cat /tmp/gcloud-api-key.json | docker login -u _json_key --password-stdin https://gcr.io
+          - docker push ${IMAGE_NAME}
+          - gcloud container images list
+          - curl -o /tmp/google-cloud-sdk.tar.gz https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-388.0.0-linux-x86_64.tar.gz
+          - tar -xvf /tmp/google-cloud-sdk.tar.gz -C /tmp/
+          - /tmp/google-cloud-sdk/install.sh -q
+          - source /tmp/google-cloud-sdk/path.bash.inc
+          - apk add --no-cache openssh-client bash
+          # download helm
+          - export VERIFY_CHECKSUM=false
+          - curl -sSL https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 | bash
+          - helm version
+          # push gke and aplly helm
+          - gcloud container clusters get-credentials general-cluster --zone=europe-west1-b --project heavenland-development
+          - gcloud components install kubectl
+          # upgrade helm for develop
+          - helm upgrade 
+            --install
+            --namespace="web-auth-service-develop"
+            --set app.name="web-auth-service-develop"
+            --set ingress.name="web-auth-service-develop-ingress"
+            --set ingress.host="auth.dev.heavenland.io"
+            --set app.replicaCount="2"
+            --set app.namespace="web-auth-service-develop"
+            --set service.port="3000"
+            --set service.type="NodePort"
+            --set app.port="3000"
+            --set service.name="web-auth-service-develop-cluster"
+            --set image.repo="heavenland-development"
+            --set image.name="web-auth-service-develop"
+            --set image.tag="${BITBUCKET_COMMIT}"
+            --wait
+            --timeout 1000s
+            --debug
+            chartwasdevelop
+            ./deployment/web-auth-service-develop
+pipelines:
+  tags:
+    v*:
+      - step: *build-image
+      - step: *deploy_production
+
+  branches:
+    production:
+      - step: *build-image
+      - step: *deploy_production
+    staging:
+      - step: *build-image_staging
+      - step: *deploy_staging
+    develop:
+      - step: *build-image_develop
+      - step: *deploy_develop

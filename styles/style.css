@@ -1,0 +1,31 @@
+body {
+    @apply bg-indigo-950 text-white;
+}
+
+main#appMain {
+    @apply relative;
+}
+
+html {
+    scroll-behavior: smooth;
+}
+
+main#appMain:not(.withoutBg)::before {
+    content: '';
+    background: url('assets/bg3.jpg') center center;
+    background-size: cover;
+    @apply fixed top-0 right-0 left-0 bottom-0 opacity-10 -z-10;
+}
+
+.text-justify-center {
+    text-align: justify;
+    text-align-last: center;
+}
+
+#__nuxt .hyperlink {
+    @apply text-indigo-300 underline underline-offset-2;
+}
+
+#__nuxt {
+    @apply relative min-h-screen;
+}
